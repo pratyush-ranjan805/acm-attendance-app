@@ -9,7 +9,8 @@ let initialized = false;
 
 export function getDb(): Client {
   if (!dbInstance) {
-    const dbUrl = process.env.DATABASE_URL || "file:./data/attendance.db";
+    const defaultFile = process.env.VERCEL ? "file:/tmp/attendance.db" : "file:./data/attendance.db";
+    const dbUrl = process.env.DATABASE_URL || defaultFile;
     
     // Ensure directory exists if it's a local file database
     if (dbUrl.startsWith("file:")) {
