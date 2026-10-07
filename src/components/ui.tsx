@@ -1,6 +1,6 @@
 "use client";
 import { createContext, useCallback, useContext, useEffect, useState, ReactNode, DependencyList } from "react";
-import { ApiError, shift, today } from "@/lib/api";
+import { ApiError, clearClientCache, shift, today } from "@/lib/api";
 
 const T = createContext<(m: string, ok?: boolean) => void>(() => {});
 export const useToast = () => useContext(T);
@@ -23,7 +23,7 @@ export function useLoad<T>(fn: () => Promise<T>, deps: DependencyList) {
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, n]);
-  return { data, error, loading, reload: () => setN((x) => x + 1), setData };
+  return { data, error, loading, reload: () => { clearClientCache(); setN((x) => x + 1); }, setData };
 }
 
 export const Skeleton = ({ rows = 3 }: { rows?: number }) => (

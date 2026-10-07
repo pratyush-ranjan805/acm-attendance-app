@@ -3,11 +3,11 @@ import React, { useState, useRef, useEffect } from "react";
 import { Member, Status } from "@/lib/api";
 
 interface SwipeableMemberRowProps {
-  member: Member;
+  member: Member & { registrationNumber?: string; department?: string };
   status: Status;
   onStatusChange: (newStatus: Status) => void;
-  onEdit: (member: Member) => void;
-  onDelete: (member: Member) => void;
+  onEdit?: (member: Member) => void;
+  onDelete?: (member: Member) => void;
 }
 
 export function SwipeableMemberRow({
@@ -249,7 +249,8 @@ export function SwipeableMemberRow({
 
             <p className="text-xs text-white/50 mt-0.5">
               {member.role === "Leader" ? "Team Leader" : "Team Member"}
-              {member.email ? ` · ${member.email}` : ""}
+              {(member as any).registrationNumber ? ` · ${(member as any).registrationNumber}` : ""}
+              {(member as any).department ? ` · ${(member as any).department}` : ""}
             </p>
 
             {/* Subtle Swipe Guidance Hint */}
@@ -280,31 +281,37 @@ export function SwipeableMemberRow({
             {isPresent ? "✓ PRESENT" : "ABSENT"}
           </div>
 
-          {/* Action buttons (Edit / Delete) */}
-          <div className="flex items-center gap-1 border-l border-white/10 pl-2">
-            <button
-              type="button"
-              className="action-btn btn-ghost !px-2 !py-1 text-xs text-white/60 hover:text-white"
-              aria-label={`Edit ${member.name}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                onEdit(member);
-              }}
-            >
-              ✎
-            </button>
-            <button
-              type="button"
-              className="action-btn btn-ghost !px-2 !py-1 text-xs text-red-400/70 hover:text-red-400"
-              aria-label={`Delete ${member.name}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                onDelete(member);
-              }}
-            >
-              🗑
-            </button>
-          </div>
+          {/* Action buttons (Edit / Delete) — only shown when callbacks are provided */}
+          {(onEdit || onDelete) && (
+            <div className="flex items-center gap-1 border-l border-white/10 pl-2">
+              {onEdit && (
+                <button
+                  type="button"
+                  className="action-btn btn-ghost !px-2 !py-1 text-xs text-white/60 hover:text-white"
+                  aria-label={`Edit ${member.name}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onEdit(member);
+                  }}
+                >
+                  ✎
+                </button>
+              )}
+              {onDelete && (
+                <button
+                  type="button"
+                  className="action-btn btn-ghost !px-2 !py-1 text-xs text-red-400/70 hover:text-red-400"
+                  aria-label={`Delete ${member.name}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDelete(member);
+                  }}
+                >
+                  🗑
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>

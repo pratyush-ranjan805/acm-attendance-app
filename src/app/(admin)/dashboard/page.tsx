@@ -4,14 +4,10 @@ import { api, today, fmtDate } from "@/lib/api";
 import { ErrorBox, Skeleton, Stat, useLoad } from "@/components/ui";
 import { TeamSearch } from "@/components/Team";
 import { ExportButton } from "@/components/Shell";
-import { ImportModal } from "@/components/ImportModal";
-import { RegisterTeamModal } from "@/components/RegisterTeamModal";
 
 export default function Dashboard() {
   const d = today();
-  const [manualOpen, setManualOpen] = useState(false);
-  const [importOpen, setImportOpen] = useState(false);
-  const [k, setK] = useState(0);
+  const [k] = useState(0);
   const { data, error, loading, reload } = useLoad(() => api.stats(d), [d, k]);
 
   return (
@@ -22,20 +18,11 @@ export default function Dashboard() {
           <p className="text-white/60">
             Manage team attendance and event participation · {fmtDate(d)}
           </p>
+          <p className="text-xs text-white/40 mt-0.5">
+            Showing staged &amp; shortlisted teams from the IG portal
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={() => setManualOpen(true)}
-            className="btn !bg-neutral-800 hover:!bg-neutral-700 border border-white/10 flex items-center gap-1.5 text-sm"
-          >
-            ✏️ Register Team
-          </button>
-          <button
-            onClick={() => setImportOpen(true)}
-            className="btn !bg-orange-600 hover:!bg-orange-700 flex items-center gap-1.5 text-sm"
-          >
-            📤 Upload Excel / PDF
-          </button>
           <ExportButton date={d} label="Export Attendance" />
         </div>
       </div>
@@ -60,24 +47,6 @@ export default function Dashboard() {
       )}
 
       <TeamSearch key={k} />
-
-      <RegisterTeamModal
-        open={manualOpen}
-        onClose={() => setManualOpen(false)}
-        onSuccess={() => {
-          reload();
-          setK((prev) => prev + 1);
-        }}
-      />
-
-      <ImportModal
-        open={importOpen}
-        onClose={() => setImportOpen(false)}
-        onSuccess={() => {
-          reload();
-          setK((prev) => prev + 1);
-        }}
-      />
     </div>
   );
 }

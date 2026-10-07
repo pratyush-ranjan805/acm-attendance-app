@@ -1,7 +1,5 @@
 import { NextRequest } from "next/server";
 import jwt from "jsonwebtoken";
-import bcrypt from "bcryptjs";
-import { getDb, initDatabase } from "./db";
 import { getSupabaseClient } from "./supabase";
 
 const JWT_SECRET = process.env.JWT_SECRET || "acm-siggraph-secret-key-2026";
@@ -51,80 +49,104 @@ export async function authenticateRequest(req: NextRequest): Promise<AdminPayloa
   return verifyAdminToken(token);
 }
 
-export async function loginAdmin(email: string, password: string): Promise<{ token: string; admin: { name: string; email: string } } | null> {
-  const supabase = getSupabaseClient();
+/**
+ * Login using shared ADMIN_PASSWORD or Supabase Auth.
+ * 
+ * Supports:
+ * 1. Master admin fallback (email matches ADMIN_EMAIL or 'admin@acm.org' + ADMIN_PASSWORD)
+ * 2. Any college_email with profiles.is_admin = true + ADMIN_PASSWORD
+ * 3. Supabase Auth credentials (email + Supabase password) with profiles.is_admin = true
+ */
+export async function loginAdmin(
+  email: string,
+  password: string
+): Promise<{ token: string; admin: { name: string; email: string } } | null> {
+  const cleanEmail = email.trim().toLowerCase();
+  const envAdminPassword = process.env.ADMIN_PASSWORD || "admin123";
+  const envAdminEmail = (process.env.ADMIN_EMAIL || "admin@acm.org").trim().toLowerCase();
 
-  if (supabase) {
-    const { data, error } = await supabase
-      .from("admins")
-      .select("id, name, email, password_hash, role")
-      .ilike("email", email.trim())
-      .limit(1);
-
-    if (error || !data || data.length === 0) {
-      return null;
-    }
-
-    const adminRow = data[0];
-    const isMatch = await bcrypt.compare(password, adminRow.password_hash);
-    if (!isMatch) return null;
-
+  // 1. Master admin bypass / default desk credentials
+  if (password === envAdminPassword && cleanEmail === envAdminEmail) {
     const payload: AdminPayload = {
-      userId: adminRow.id,
-      name: adminRow.name,
-      email: adminRow.email,
+      userId: "master-admin",
+      name: "Event Admin",
+      email: cleanEmail,
       role: "admin",
     };
-
     const token = signAdminToken(payload);
     return {
       token,
       admin: {
-        name: adminRow.name,
-        email: adminRow.email,
+        name: payload.name,
+        email: payload.email,
       },
     };
   }
 
-  // Fallback to SQLite
-  await initDatabase();
-  const db = getDb();
-  
-  const res = await db.execute({
-    sql: `SELECT id, name, email, password_hash, role FROM admins WHERE LOWER(email) = LOWER(?) LIMIT 1`,
-    args: [email.trim()],
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    throw new Error(
+      "Supabase is not configured. Please set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY."
+    );
+  }
+
+  // 2. Shared ADMIN_PASSWORD matching any admin profile in public.profiles
+  if (password === envAdminPassword) {
+    const { data: profileData, error: profileError } = await supabase
+      .from("profiles")
+      .select("id, full_name, college_email, is_admin")
+      .ilike("college_email", cleanEmail)
+      .single();
+
+    if (!profileError && profileData && profileData.is_admin) {
+      const payload: AdminPayload = {
+        userId: String(profileData.id),
+        name: String(profileData.full_name || "Admin"),
+        email: String(profileData.college_email || cleanEmail),
+        role: "admin",
+      };
+      const token = signAdminToken(payload);
+      return {
+        token,
+        admin: {
+          name: payload.name,
+          email: payload.email,
+        },
+      };
+    }
+  }
+
+  // 3. Fallback: Supabase Auth (email + password)
+  const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+    email: cleanEmail,
+    password,
   });
 
-  if (res.rows.length === 0) {
-    return null;
+  if (!authError && authData?.user) {
+    const user = authData.user;
+    const { data: profileData, error: profileError } = await supabase
+      .from("profiles")
+      .select("id, full_name, college_email, is_admin")
+      .eq("id", user.id)
+      .single();
+
+    if (!profileError && profileData && profileData.is_admin) {
+      const payload: AdminPayload = {
+        userId: String(profileData.id),
+        name: String(profileData.full_name || "Admin"),
+        email: String(profileData.college_email || user.email),
+        role: "admin",
+      };
+      const token = signAdminToken(payload);
+      return {
+        token,
+        admin: {
+          name: payload.name,
+          email: payload.email,
+        },
+      };
+    }
   }
 
-  const adminRow = res.rows[0] as unknown as {
-    id: string;
-    name: string;
-    email: string;
-    password_hash: string;
-    role: "admin";
-  };
-
-  const isMatch = await bcrypt.compare(password, adminRow.password_hash);
-  if (!isMatch) {
-    return null;
-  }
-
-  const payload: AdminPayload = {
-    userId: adminRow.id,
-    name: adminRow.name,
-    email: adminRow.email,
-    role: "admin",
-  };
-
-  const token = signAdminToken(payload);
-  return {
-    token,
-    admin: {
-      name: adminRow.name,
-      email: adminRow.email,
-    },
-  };
+  return null;
 }

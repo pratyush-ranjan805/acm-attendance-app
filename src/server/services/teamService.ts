@@ -1,526 +1,272 @@
-import { v4 as uuidv4 } from "uuid";
-import { getDb, initDatabase } from "../db";
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { getSupabaseClient } from "../supabase";
 
+// ─── DTOs ────────────────────────────────────────────────────────────────────
+
 export interface TeamMemberDto {
-  id: string;
-  name: string;
-  member_name?: string;
-  email?: string;
+  id: string;          // profile_id (uuid)
+  name: string;        // full_name from profiles
+  email?: string;      // college_email
   role: "Leader" | "Member";
-  status?: "Present" | "Absent" | "Not Marked" | null;
+  registrationNumber?: string;
+  department?: string;
+  status?: "Present" | "Absent" | null;
   markedAt?: string | null;
-  marked_at?: string | null;
 }
 
 export interface TeamDto {
-  id: string;
-  teamId: string;
+  id: string;          // ig_teams.id (uuid)
+  teamId: string;      // ig_teams.team_code  (used as display ID)
   team_id: string;
-  name: string;
+  name: string;        // ig_teams.name
   team_name: string;
   memberCount: number;
   members: TeamMemberDto[];
   created_at: string;
   updated_at: string;
+  // Extra IG fields
+  isShortlisted: boolean;
+  isStaged: boolean;
+  submissionUrl?: string | null;
+  problemStatement?: string | null;
+}
+
+// ─── Helper ──────────────────────────────────────────────────────────────────
+
+function requireSupabase() {
+  const supabase = getSupabaseClient();
+  if (!supabase) throw new Error("Supabase is not configured. Please set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.");
+  return supabase;
+}
+
+/** Only teams that have been staged OR shortlisted */
+const ELIGIBLE_FILTER = "staged_at.not.is.null,shortlisted_at.not.is.null";
+
+import { serverCache } from "../cache";
+
+// ─── getAllTeams ──────────────────────────────────────────────────────────────
+
+let pendingRawTeamsPromise: Promise<any[]> | null = null;
+
+export async function fetchEligibleTeamsRaw(): Promise<any[]> {
+  const cached = serverCache.get<any[]>("teams:raw_all");
+  if (cached) return cached;
+
+  if (pendingRawTeamsPromise) {
+    return pendingRawTeamsPromise;
+  }
+
+  pendingRawTeamsPromise = (async () => {
+    try {
+      const supabase = requireSupabase();
+      const { data, error } = await supabase
+        .from("ig_teams")
+        .select(`
+          id,
+          name,
+          team_code,
+          leader_id,
+          submission_url,
+          problem_statement,
+          staged_at,
+          shortlisted_at,
+          created_at,
+          updated_at,
+          ig_team_members (
+            profile_id,
+            profiles (
+              id,
+              full_name,
+              college_email,
+              registration_number,
+              department,
+              phone_number
+            )
+          )
+        `)
+        .or(ELIGIBLE_FILTER)
+        .order("team_code", { ascending: true });
+
+      if (error) throw new Error(error.message);
+      const teams = data || [];
+      serverCache.set("teams:raw_all", teams, 60);
+      return teams;
+    } finally {
+      pendingRawTeamsPromise = null;
+    }
+  })();
+
+  return pendingRawTeamsPromise;
 }
 
 export async function getAllTeams(search?: string): Promise<TeamDto[]> {
-  const supabase = getSupabaseClient();
+  const rawTeams = await fetchEligibleTeamsRaw();
+  const dtos = rawTeams.map((t: any) => buildTeamDto(t, []));
 
-  if (supabase) {
-    let query = supabase.from("teams").select("*, team_members(*)").order("team_id", { ascending: true });
+  if (search && search.trim()) {
+    const term = search.trim().toLowerCase();
+    return dtos.filter(
+      (t) =>
+        t.name.toLowerCase().includes(term) ||
+        t.teamId.toLowerCase().includes(term)
+    );
+  }
 
-    if (search && search.trim()) {
-      const term = search.trim();
-      query = query.or(`team_name.ilike.%${term}%,team_id.ilike.%${term}%`);
+  return dtos;
+}
+
+// ─── getTeamByIdOrCode ───────────────────────────────────────────────────────
+
+export async function getTeamByIdOrCode(identifier: string, date?: string): Promise<TeamDto | null> {
+  const supabase = requireSupabase();
+  const targetDate = date || new Date().toLocaleDateString("en-CA");
+
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
+
+  // Check if team is in raw cache first to save round trips
+  const rawTeams = serverCache.get<any[]>("teams:raw_all");
+  let team: any = null;
+  if (rawTeams) {
+    team = isUuid
+      ? rawTeams.find((t) => t.id === identifier)
+      : rawTeams.find((t) => String(t.team_code).toLowerCase() === identifier.trim().toLowerCase());
+  }
+
+  if (!team) {
+    let query = supabase
+      .from("ig_teams")
+      .select(`
+        id,
+        name,
+        team_code,
+        leader_id,
+        submission_url,
+        problem_statement,
+        staged_at,
+        shortlisted_at,
+        created_at,
+        updated_at,
+        ig_team_members (
+          profile_id,
+          profiles (
+            id,
+            full_name,
+            college_email,
+            registration_number,
+            department
+          )
+        )
+      `)
+      .or(ELIGIBLE_FILTER)
+      .limit(1);
+
+    if (isUuid) {
+      query = query.eq("id", identifier);
+    } else {
+      query = query.ilike("team_code", identifier.trim());
     }
 
     const { data, error } = await query;
-    if (error) throw new Error(error.message);
+    if (error || !data || data.length === 0) return null;
+    team = data[0];
+  }
 
-    return (data || []).map((t: any) => {
-      const rawMembers = t.team_members || [];
-      const members: TeamMemberDto[] = rawMembers
-        .sort((a: any, b: any) => (a.role === "Leader" ? -1 : 1) - (b.role === "Leader" ? -1 : 1) || a.member_name.localeCompare(b.member_name))
-        .map((m: any) => ({
-          id: String(m.id),
-          name: String(m.member_name),
-          member_name: String(m.member_name),
-          email: m.email ? String(m.email) : undefined,
-          role: m.role === "Leader" ? "Leader" : "Member",
-          status: null,
-          markedAt: null,
-        }));
+  // Fetch attendance for all members on this date
+  const profileIds = (team.ig_team_members || []).map((m: any) => m.profile_id);
+  let attMap = new Map<string, { status: string; marked_at: string | null }>();
 
+  if (profileIds.length > 0) {
+    const { data: attData } = await supabase
+      .from("ig_attendance")
+      .select("profile_id, status, marked_at")
+      .eq("team_id", team.id)
+      .eq("attendance_date", targetDate)
+      .in("profile_id", profileIds);
+
+    (attData || []).forEach((a: any) => {
+      attMap.set(a.profile_id, { status: a.status, marked_at: a.marked_at });
+    });
+  }
+
+  return buildTeamDto(team, [], attMap);
+}
+
+// ─── buildTeamDto ─────────────────────────────────────────────────────────────
+
+function buildTeamDto(
+  t: any,
+  _unused: any[],
+  attMap?: Map<string, { status: string; marked_at: string | null }>
+): TeamDto {
+  const rawMembers: any[] = t.ig_team_members || [];
+  const leaderId: string = t.leader_id;
+
+  const members: TeamMemberDto[] = rawMembers
+    .filter((m: any) => m.profiles) // skip if profile is missing
+    .sort((a: any, b: any) => {
+      // Leader first
+      const aIsLeader = a.profile_id === leaderId;
+      const bIsLeader = b.profile_id === leaderId;
+      if (aIsLeader && !bIsLeader) return -1;
+      if (!aIsLeader && bIsLeader) return 1;
+      return (a.profiles?.full_name || "").localeCompare(b.profiles?.full_name || "");
+    })
+    .map((m: any) => {
+      const p = m.profiles;
+      const att = attMap?.get(m.profile_id);
       return {
-        id: String(t.id),
-        teamId: String(t.team_id),
-        team_id: String(t.team_id),
-        name: String(t.team_name),
-        team_name: String(t.team_name),
-        memberCount: members.length,
-        members,
-        created_at: String(t.created_at),
-        updated_at: String(t.updated_at),
+        id: String(m.profile_id),
+        name: String(p.full_name),
+        email: p.college_email ? String(p.college_email) : undefined,
+        registrationNumber: p.registration_number ? String(p.registration_number) : undefined,
+        department: p.department ? String(p.department) : undefined,
+        role: m.profile_id === leaderId ? "Leader" : "Member",
+        status: att ? (att.status as "Present" | "Absent") : null,
+        markedAt: att ? att.marked_at : null,
       };
     });
-  }
-
-  // Fallback to SQLite
-  await initDatabase();
-  const db = getDb();
-
-  let sql = `SELECT id, team_id, team_name, created_at, updated_at FROM teams`;
-  const args: any[] = [];
-
-  if (search && search.trim()) {
-    const term = `%${search.trim().toLowerCase()}%`;
-    sql += ` WHERE LOWER(team_name) LIKE ? OR LOWER(team_id) LIKE ?`;
-    args.push(term, term);
-  }
-
-  sql += ` ORDER BY team_id ASC`;
-
-  const teamsRes = await db.execute({ sql, args });
-
-  const teams: TeamDto[] = [];
-  for (const row of teamsRes.rows) {
-    const tId = String(row.id);
-    const membersRes = await db.execute({
-      sql: `SELECT id, member_name, email, role, created_at, updated_at FROM team_members WHERE team_id = ? ORDER BY CASE WHEN role = 'Leader' THEN 0 ELSE 1 END, member_name ASC`,
-      args: [tId],
-    });
-
-    const members: TeamMemberDto[] = membersRes.rows.map((m) => ({
-      id: String(m.id),
-      name: String(m.member_name),
-      member_name: String(m.member_name),
-      email: m.email ? String(m.email) : undefined,
-      role: (m.role === "Leader" ? "Leader" : "Member") as "Leader" | "Member",
-      status: null,
-      markedAt: null,
-    }));
-
-    teams.push({
-      id: tId,
-      teamId: String(row.team_id),
-      team_id: String(row.team_id),
-      name: String(row.team_name),
-      team_name: String(row.team_name),
-      memberCount: members.length,
-      members,
-      created_at: String(row.created_at),
-      updated_at: String(row.updated_at),
-    });
-  }
-
-  return teams;
-}
-
-export async function getTeamByIdOrCode(identifier: string, date?: string): Promise<TeamDto | null> {
-  const targetDate = date || new Date().toLocaleDateString("en-CA");
-  const supabase = getSupabaseClient();
-
-  if (supabase) {
-    let query = supabase.from("teams").select("*, team_members(*)");
-    // Check if identifier is uuid or team_id
-    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier)) {
-      query = query.eq("id", identifier);
-    } else {
-      query = query.ilike("team_id", identifier.trim());
-    }
-
-    const { data, error } = await query.limit(1);
-    if (error || !data || data.length === 0) return null;
-
-    const team = data[0];
-    const memberIds = (team.team_members || []).map((m: any) => m.id);
-
-    // Fetch attendance for this date
-    let attMap = new Map<string, { status: string; marked_at: string | null }>();
-    if (memberIds.length > 0) {
-      const { data: attData } = await supabase
-        .from("attendance")
-        .select("team_member_id, status, marked_at")
-        .eq("attendance_date", targetDate)
-        .in("team_member_id", memberIds);
-
-      (attData || []).forEach((a: any) => {
-        attMap.set(a.team_member_id, { status: a.status, marked_at: a.marked_at });
-      });
-    }
-
-    const members: TeamMemberDto[] = (team.team_members || [])
-      .sort((a: any, b: any) => (a.role === "Leader" ? -1 : 1) - (b.role === "Leader" ? -1 : 1) || a.member_name.localeCompare(b.member_name))
-      .map((m: any) => {
-        const att = attMap.get(m.id);
-        return {
-          id: String(m.id),
-          name: String(m.member_name),
-          member_name: String(m.member_name),
-          email: m.email ? String(m.email) : undefined,
-          role: m.role === "Leader" ? "Leader" : "Member",
-          status: (att ? att.status : null) as "Present" | "Absent" | null,
-          markedAt: att ? att.marked_at : null,
-          marked_at: att ? att.marked_at : null,
-        };
-      });
-
-    return {
-      id: String(team.id),
-      teamId: String(team.team_id),
-      team_id: String(team.team_id),
-      name: String(team.team_name),
-      team_name: String(team.team_name),
-      memberCount: members.length,
-      members,
-      created_at: String(team.created_at),
-      updated_at: String(team.updated_at),
-    };
-  }
-
-  // Fallback to SQLite
-  await initDatabase();
-  const db = getDb();
-
-  const teamRes = await db.execute({
-    sql: `SELECT id, team_id, team_name, created_at, updated_at FROM teams WHERE id = ? OR LOWER(team_id) = LOWER(?) LIMIT 1`,
-    args: [identifier, identifier.trim()],
-  });
-
-  if (teamRes.rows.length === 0) {
-    return null;
-  }
-
-  const teamRow = teamRes.rows[0];
-  const tId = String(teamRow.id);
-
-  const membersRes = await db.execute({
-    sql: `
-      SELECT 
-        m.id, 
-        m.member_name, 
-        m.email, 
-        m.role, 
-        a.status as attendance_status, 
-        a.marked_at
-      FROM team_members m
-      LEFT JOIN attendance a ON m.id = a.team_member_id AND a.attendance_date = ?
-      WHERE m.team_id = ?
-      ORDER BY CASE WHEN m.role = 'Leader' THEN 0 ELSE 1 END, m.member_name ASC
-    `,
-    args: [targetDate, tId],
-  });
-
-  const members: TeamMemberDto[] = membersRes.rows.map((m) => ({
-    id: String(m.id),
-    name: String(m.member_name),
-    member_name: String(m.member_name),
-    email: m.email ? String(m.email) : undefined,
-    role: (m.role === "Leader" ? "Leader" : "Member") as "Leader" | "Member",
-    status: (m.attendance_status ? String(m.attendance_status) : null) as "Present" | "Absent" | null,
-    markedAt: m.marked_at ? String(m.marked_at) : null,
-    marked_at: m.marked_at ? String(m.marked_at) : null,
-  }));
 
   return {
-    id: tId,
-    teamId: String(teamRow.team_id),
-    team_id: String(teamRow.team_id),
-    name: String(teamRow.team_name),
-    team_name: String(teamRow.team_name),
+    id: String(t.id),
+    teamId: String(t.team_code),
+    team_id: String(t.team_code),
+    name: String(t.name),
+    team_name: String(t.name),
     memberCount: members.length,
     members,
-    created_at: String(teamRow.created_at),
-    updated_at: String(teamRow.updated_at),
+    created_at: String(t.created_at),
+    updated_at: String(t.updated_at),
+    isShortlisted: !!t.shortlisted_at,
+    isStaged: !!t.staged_at,
+    submissionUrl: t.submission_url || null,
+    problemStatement: t.problem_statement || null,
   };
 }
 
-export async function createTeam(data: { teamId?: string; team_id?: string; name?: string; team_name?: string }): Promise<TeamDto> {
-  const code = (data.team_id || data.teamId || "").trim().toUpperCase();
-  const name = (data.team_name || data.name || "").trim();
+// ─── Stubs for operations that are no longer applicable ──────────────────────
+// Teams and members come from Supabase (the IG portal), not from this app.
+// These are kept as stubs so the API routes compile, but they throw with clear messages.
 
-  if (!code) throw new Error("Team ID is required (e.g. ACM001).");
-  if (!name) throw new Error("Team Name is required.");
-
-  const supabase = getSupabaseClient();
-  if (supabase) {
-    const { data: existing } = await supabase.from("teams").select("id").ilike("team_id", code).limit(1);
-    if (existing && existing.length > 0) {
-      throw new Error(`Team ID '${code}' already exists.`);
-    }
-
-    const { data: created, error } = await supabase
-      .from("teams")
-      .insert([{ team_id: code, team_name: name }])
-      .select()
-      .single();
-
-    if (error) throw new Error(error.message);
-
-    return {
-      id: String(created.id),
-      teamId: String(created.team_id),
-      team_id: String(created.team_id),
-      name: String(created.team_name),
-      team_name: String(created.team_name),
-      memberCount: 0,
-      members: [],
-      created_at: String(created.created_at),
-      updated_at: String(created.updated_at),
-    };
-  }
-
-  // SQLite Fallback
-  await initDatabase();
-  const db = getDb();
-
-  const checkRes = await db.execute({
-    sql: `SELECT id FROM teams WHERE LOWER(team_id) = LOWER(?) LIMIT 1`,
-    args: [code],
-  });
-  if (checkRes.rows.length > 0) {
-    throw new Error(`Team ID '${code}' already exists.`);
-  }
-
-  const id = uuidv4();
-  const now = new Date().toISOString();
-
-  await db.execute({
-    sql: `INSERT INTO teams (id, team_id, team_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
-    args: [id, code, name, now, now],
-  });
-
-  return {
-    id,
-    teamId: code,
-    team_id: code,
-    name,
-    team_name: name,
-    memberCount: 0,
-    members: [],
-    created_at: now,
-    updated_at: now,
-  };
+export async function createTeam(_data: unknown): Promise<TeamDto> {
+  throw new Error("Teams are managed in the IG portal. Only staged or shortlisted teams appear here.");
 }
 
-export async function updateTeam(identifier: string, data: { teamId?: string; team_id?: string; name?: string; team_name?: string }): Promise<TeamDto> {
-  const team = await getTeamByIdOrCode(identifier);
-  if (!team) throw new Error("Team not found.");
-
-  const newCode = (data.team_id || data.teamId || team.teamId).trim().toUpperCase();
-  const newName = (data.team_name || data.name || team.name).trim();
-
-  const supabase = getSupabaseClient();
-  if (supabase) {
-    const { error } = await supabase
-      .from("teams")
-      .update({ team_id: newCode, team_name: newName, updated_at: new Date().toISOString() })
-      .eq("id", team.id);
-
-    if (error) throw new Error(error.message);
-    return (await getTeamByIdOrCode(team.id))!;
-  }
-
-  // SQLite Fallback
-  await initDatabase();
-  const db = getDb();
-
-  const now = new Date().toISOString();
-  await db.execute({
-    sql: `UPDATE teams SET team_id = ?, team_name = ?, updated_at = ? WHERE id = ?`,
-    args: [newCode, newName, now, team.id],
-  });
-
-  return (await getTeamByIdOrCode(team.id))!;
+export async function updateTeam(_identifier: string, _data: unknown): Promise<TeamDto> {
+  throw new Error("Team editing is not supported here. Manage teams in the IG portal.");
 }
 
-export async function deleteTeam(identifier: string): Promise<void> {
-  const team = await getTeamByIdOrCode(identifier);
-  if (!team) throw new Error("Team not found.");
-
-  const supabase = getSupabaseClient();
-  if (supabase) {
-    const { error } = await supabase.from("teams").delete().eq("id", team.id);
-    if (error) throw new Error(error.message);
-    return;
-  }
-
-  // SQLite Fallback
-  await initDatabase();
-  const db = getDb();
-
-  const members = await db.execute({
-    sql: `SELECT id FROM team_members WHERE team_id = ?`,
-    args: [team.id],
-  });
-
-  for (const m of members.rows) {
-    await db.execute({
-      sql: `DELETE FROM attendance WHERE team_member_id = ?`,
-      args: [String(m.id)],
-    });
-  }
-
-  await db.execute({
-    sql: `DELETE FROM team_members WHERE team_id = ?`,
-    args: [team.id],
-  });
-
-  await db.execute({
-    sql: `DELETE FROM teams WHERE id = ?`,
-    args: [team.id],
-  });
+export async function deleteTeam(_identifier: string): Promise<void> {
+  throw new Error("Team deletion is not supported here. Manage teams in the IG portal.");
 }
 
-export async function addMemberToTeam(
-  teamIdentifier: string,
-  data: { name?: string; member_name?: string; email?: string; role?: string }
-): Promise<TeamMemberDto> {
-  const team = await getTeamByIdOrCode(teamIdentifier);
-  if (!team) throw new Error("Team not found.");
-
-  const memberName = (data.member_name || data.name || "").trim();
-  if (!memberName) throw new Error("Member name is required.");
-
-  const role = data.role === "Leader" ? "Leader" : "Member";
-  const email = data.email ? data.email.trim() : null;
-
-  const supabase = getSupabaseClient();
-  if (supabase) {
-    const { data: created, error } = await supabase
-      .from("team_members")
-      .insert([{ team_id: team.id, member_name: memberName, email, role }])
-      .select()
-      .single();
-
-    if (error) throw new Error(error.message);
-
-    return {
-      id: String(created.id),
-      name: memberName,
-      member_name: memberName,
-      email: email || undefined,
-      role,
-      status: null,
-      markedAt: null,
-    };
-  }
-
-  // SQLite Fallback
-  await initDatabase();
-  const db = getDb();
-
-  const id = uuidv4();
-  const now = new Date().toISOString();
-
-  await db.execute({
-    sql: `INSERT INTO team_members (id, team_id, member_name, email, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    args: [id, team.id, memberName, email, role, now, now],
-  });
-
-  return {
-    id,
-    name: memberName,
-    member_name: memberName,
-    email: email || undefined,
-    role,
-    status: null,
-    markedAt: null,
-  };
+export async function addMemberToTeam(_teamIdentifier: string, _data: unknown): Promise<TeamMemberDto> {
+  throw new Error("Member management is not supported here. Manage members in the IG portal.");
 }
 
-export async function updateTeamMember(
-  memberId: string,
-  data: { name?: string; member_name?: string; email?: string; role?: string }
-): Promise<TeamMemberDto> {
-  const supabase = getSupabaseClient();
-
-  if (supabase) {
-    const updateObj: any = { updated_at: new Date().toISOString() };
-    if (data.member_name || data.name) updateObj.member_name = (data.member_name || data.name)?.trim();
-    if (data.email !== undefined) updateObj.email = data.email ? data.email.trim() : null;
-    if (data.role) updateObj.role = data.role === "Leader" ? "Leader" : "Member";
-
-    const { data: updated, error } = await supabase
-      .from("team_members")
-      .update(updateObj)
-      .eq("id", memberId)
-      .select()
-      .single();
-
-    if (error) throw new Error(error.message);
-
-    return {
-      id: memberId,
-      name: String(updated.member_name),
-      member_name: String(updated.member_name),
-      email: updated.email ? String(updated.email) : undefined,
-      role: updated.role as "Leader" | "Member",
-      status: null,
-      markedAt: null,
-    };
-  }
-
-  // SQLite Fallback
-  await initDatabase();
-  const db = getDb();
-
-  const memberRes = await db.execute({
-    sql: `SELECT id, team_id, member_name, email, role FROM team_members WHERE id = ? LIMIT 1`,
-    args: [memberId],
-  });
-
-  if (memberRes.rows.length === 0) {
-    throw new Error("Team member not found.");
-  }
-
-  const existing = memberRes.rows[0];
-  const newName = (data.member_name || data.name || String(existing.member_name)).trim();
-  const newRole = data.role ? (data.role === "Leader" ? "Leader" : "Member") : String(existing.role);
-  const newEmail = data.email !== undefined ? (data.email ? data.email.trim() : null) : (existing.email ? String(existing.email) : null);
-  const now = new Date().toISOString();
-
-  await db.execute({
-    sql: `UPDATE team_members SET member_name = ?, email = ?, role = ?, updated_at = ? WHERE id = ?`,
-    args: [newName, newEmail, newRole, now, memberId],
-  });
-
-  return {
-    id: memberId,
-    name: newName,
-    member_name: newName,
-    email: newEmail || undefined,
-    role: newRole as "Leader" | "Member",
-    status: null,
-    markedAt: null,
-  };
+export async function updateTeamMember(_memberId: string, _data: unknown): Promise<TeamMemberDto> {
+  throw new Error("Member management is not supported here. Manage members in the IG portal.");
 }
 
-export async function deleteTeamMember(memberId: string): Promise<void> {
-  const supabase = getSupabaseClient();
-  if (supabase) {
-    const { error } = await supabase.from("team_members").delete().eq("id", memberId);
-    if (error) throw new Error(error.message);
-    return;
-  }
-
-  // SQLite Fallback
-  await initDatabase();
-  const db = getDb();
-
-  await db.execute({
-    sql: `DELETE FROM attendance WHERE team_member_id = ?`,
-    args: [memberId],
-  });
-
-  const res = await db.execute({
-    sql: `DELETE FROM team_members WHERE id = ?`,
-    args: [memberId],
-  });
-
-  if (res.rowsAffected === 0) {
-    throw new Error("Team member not found.");
-  }
+export async function deleteTeamMember(_memberId: string): Promise<void> {
+  throw new Error("Member management is not supported here. Manage members in the IG portal.");
 }

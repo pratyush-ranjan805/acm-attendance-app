@@ -43,9 +43,11 @@ export async function generateAttendanceExcel(targetDate?: string): Promise<Buff
 
   wsAttendance.columns = [
     { header: "Date", key: "date", width: 14 },
-    { header: "Team ID", key: "teamId", width: 14 },
+    { header: "Team Code", key: "teamId", width: 14 },
     { header: "Team Name", key: "teamName", width: 24 },
     { header: "Member Name", key: "memberName", width: 24 },
+    { header: "Reg. Number", key: "registrationNumber", width: 18 },
+    { header: "Department", key: "department", width: 20 },
     { header: "Role", key: "role", width: 14 },
     { header: "Status", key: "status", width: 14 },
     { header: "Marked Time", key: "markedAt", width: 20 },
@@ -72,6 +74,8 @@ export async function generateAttendanceExcel(targetDate?: string): Promise<Buff
       teamId: rec.teamId,
       teamName: rec.teamName,
       memberName: rec.memberName,
+      registrationNumber: (rec as any).registrationNumber || "-",
+      department: (rec as any).department || "-",
       role: rec.role,
       status: rec.status,
       markedAt: formattedTime,
@@ -79,7 +83,7 @@ export async function generateAttendanceExcel(targetDate?: string): Promise<Buff
 
     row.eachCell((cell, colNumber) => {
       cell.border = borderStyle;
-      if (colNumber === 6) {
+      if (colNumber === 8) {
         // Status column
         cell.font = {
           bold: true,
@@ -131,9 +135,11 @@ export async function generateAttendanceExcel(targetDate?: string): Promise<Buff
   });
 
   wsMembers.columns = [
-    { header: "Team ID", key: "teamId", width: 16 },
+    { header: "Team Code", key: "teamId", width: 16 },
     { header: "Team Name", key: "teamName", width: 26 },
     { header: "Member Name", key: "name", width: 24 },
+    { header: "Reg. Number", key: "registrationNumber", width: 18 },
+    { header: "Department", key: "department", width: 22 },
     { header: "Role", key: "role", width: 14 },
     { header: "Email", key: "email", width: 30 },
   ];
@@ -152,6 +158,8 @@ export async function generateAttendanceExcel(targetDate?: string): Promise<Buff
         teamId: t.teamId,
         teamName: t.name,
         name: m.name,
+        registrationNumber: (m as any).registrationNumber || "-",
+        department: (m as any).department || "-",
         role: m.role,
         email: m.email || "-",
       });
