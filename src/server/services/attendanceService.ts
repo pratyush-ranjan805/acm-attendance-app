@@ -63,7 +63,8 @@ export async function saveAttendanceBatch(
   const supabase = requireSupabase();
   const now = new Date().toISOString();
   const fallbackDate = payload.date || new Date().toLocaleDateString("en-CA");
-  const markedBy = adminUserId || "admin";
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const updatedBy = adminUserId && uuidRegex.test(adminUserId) ? adminUserId : null;
 
   const rawList = payload.records || payload.attendance || [];
   if (!Array.isArray(rawList) || rawList.length === 0) {
@@ -74,7 +75,7 @@ export async function saveAttendanceBatch(
   const teamIdentifier = payload.teamId || "";
   let teamUuid: string | null = null;
   if (teamIdentifier) {
-    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(teamIdentifier);
+    const isUuid = uuidRegex.test(teamIdentifier);
     if (isUuid) {
       teamUuid = teamIdentifier;
     } else {
@@ -112,24 +113,35 @@ export async function saveAttendanceBatch(
 
     if (existing && existing.length > 0) {
       // Update existing
+      const updateData: Record<string, any> = {
+        status,
+        marked_at: now,
+        updated_at: now,
+      };
+      if (updatedBy) {
+        updateData.updated_by = updatedBy;
+      }
       const { error } = await supabase
         .from("ig_attendance")
-        .update({ status, marked_at: now, updated_at: now, marked_by: markedBy })
+        .update(updateData)
         .eq("id", existing[0].id);
       if (error) throw new Error(error.message);
     } else {
       // Insert new
+      const insertData: Record<string, any> = {
+        team_id: teamUuid,
+        profile_id: profileId,
+        attendance_date: itemDate,
+        status,
+        marked_at: now,
+        updated_at: now,
+      };
+      if (updatedBy) {
+        insertData.updated_by = updatedBy;
+      }
       const { error } = await supabase
         .from("ig_attendance")
-        .insert({
-          team_id: teamUuid,
-          profile_id: profileId,
-          attendance_date: itemDate,
-          status,
-          marked_at: now,
-          updated_at: now,
-          marked_by: markedBy,
-        });
+        .insert(insertData);
       if (error) throw new Error(error.message);
     }
     count++;
