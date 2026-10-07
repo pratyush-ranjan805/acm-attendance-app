@@ -50,7 +50,7 @@ export async function generateAttendanceExcel(targetDate?: string): Promise<Buff
     { header: "Department", key: "department", width: 20 },
     { header: "Role", key: "role", width: 14 },
     { header: "Status", key: "status", width: 14 },
-    { header: "Marked Time", key: "markedAt", width: 20 },
+    { header: "Marked Time (IST)", key: "markedAt", width: 22 },
   ];
 
   const headerRow1 = wsAttendance.getRow(1);
@@ -62,12 +62,23 @@ export async function generateAttendanceExcel(targetDate?: string): Promise<Buff
   headerRow1.height = 24;
 
   for (const rec of attendanceRecords) {
-    const formattedTime = rec.markedAt
-      ? new Date(rec.markedAt).toLocaleTimeString("en-US", {
-          hour: "2-digit",
-          minute: "2-digit",
-        })
-      : "-";
+    let formattedTime = "-";
+    if (rec.markedAt) {
+      try {
+        const d = new Date(rec.markedAt);
+        if (!isNaN(d.getTime())) {
+          formattedTime = d.toLocaleTimeString("en-IN", {
+            timeZone: "Asia/Kolkata",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: true,
+          });
+        }
+      } catch {
+        formattedTime = String(rec.markedAt);
+      }
+    }
 
     const row = wsAttendance.addRow({
       date: rec.date,

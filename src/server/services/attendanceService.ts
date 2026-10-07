@@ -64,7 +64,19 @@ export async function saveAttendanceBatch(
   const now = new Date().toISOString();
   const fallbackDate = payload.date || new Date().toLocaleDateString("en-CA");
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  const updatedBy = adminUserId && uuidRegex.test(adminUserId) ? adminUserId : null;
+
+  // Verify if adminUserId is an actual profile in public.profiles before using as updated_by foreign key
+  let validUpdatedBy: string | null = null;
+  if (adminUserId && uuidRegex.test(adminUserId)) {
+    const { data: prof } = await supabase
+      .from("profiles")
+      .select("id")
+      .eq("id", adminUserId)
+      .limit(1);
+    if (prof && prof.length > 0) {
+      validUpdatedBy = adminUserId;
+    }
+  }
 
   const rawList = payload.records || payload.attendance || [];
   if (!Array.isArray(rawList) || rawList.length === 0) {
@@ -118,8 +130,8 @@ export async function saveAttendanceBatch(
         marked_at: now,
         updated_at: now,
       };
-      if (updatedBy) {
-        updateData.updated_by = updatedBy;
+      if (validUpdatedBy) {
+        updateData.updated_by = validUpdatedBy;
       }
       const { error } = await supabase
         .from("ig_attendance")
@@ -136,8 +148,8 @@ export async function saveAttendanceBatch(
         marked_at: now,
         updated_at: now,
       };
-      if (updatedBy) {
-        insertData.updated_by = updatedBy;
+      if (validUpdatedBy) {
+        insertData.updated_by = validUpdatedBy;
       }
       const { error } = await supabase
         .from("ig_attendance")
