@@ -192,7 +192,7 @@ export async function getAttendanceList(filters: {
       attendance_date,
       status,
       marked_at,
-      profiles (
+      profiles!profile_id (
         id,
         full_name,
         college_email,
