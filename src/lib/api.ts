@@ -1,10 +1,10 @@
 // Single API layer. Adjust paths here if the Antigravity contract differs.
 const BASE = process.env.NEXT_PUBLIC_API_URL || "/api";
 export type Status = "Present" | "Absent";
-export type Member = { id: string; name: string; email?: string; role: "Leader" | "Member"; status?: Status | null; markedAt?: string | null };
+export type Member = { id: string; name: string; email?: string; role: "Leader" | "Member"; status?: Status | null; markedAt?: string | null; meals?: Record<string, boolean> | null };
 export type Team = { teamId: string; name: string; memberCount?: number; members: Member[] };
 export type Stats = { totalTeams: number; totalMembers: number; present: number; absent: number; percentage: number };
-export type Rec = { date: string; teamId: string; teamName: string; memberId: string; memberName: string; role: string; status: Status; markedAt: string | null };
+export type Rec = { date: string; teamId: string; teamName: string; memberId: string; memberName: string; role: string; status: Status; markedAt: string | null; meals?: Record<string, boolean> | null; updatedBy?: string | null };
 export type Admin = { name: string; email: string };
 
 export type MovementReason = "Exam" | "Food" | "Personal" | "Restroom" | "Other";
@@ -53,6 +53,38 @@ export interface MovementHistory {
   durationMinutes: number;
   markedBy?: string;
   createdAt: string;
+}
+
+export interface MealParticipant {
+  profileId: string;
+  name: string;
+  regNo: string;
+  phone: string;
+  email: string;
+  teamId: string;
+  teamCode: string;
+  teamName: string;
+  role: "Leader" | "Member";
+  attendanceStatus: "Present" | "Absent" | "Unmarked";
+  meals: Record<string, boolean>;
+  updatedBy?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface MealTypeItem {
+  key: string;
+  label: string;
+  icon?: string;
+}
+
+export interface MealsSummary {
+  date: string;
+  participants: MealParticipant[];
+  mealTypes: MealTypeItem[];
+  stats: {
+    totalParticipants: number;
+    mealCounts: Record<string, number>;
+  };
 }
 
 export class ApiError extends Error { constructor(public status: number, msg: string) { super(msg); } }
@@ -134,9 +166,13 @@ export const api = {
   addMember: (id: string, m: Partial<Member>) => j<Member>(`/teams/${e(id)}/members`, body("POST", m)),
   editMember: (id: string, mid: string, m: Partial<Member>) => j<Member>(`/teams/${e(id)}/members/${mid}`, body("PUT", m)),
   delMember: (id: string, mid: string) => { clearClientCache(); return raw(`/teams/${e(id)}/members/${mid}`, body("DELETE")); },
-  saveAttendance: (p: { teamId: string; date: string; records: { memberId: string; status: Status }[] }) => {
+  saveAttendance: (p: { teamId: string; date: string; records: { memberId: string; status: Status; meals?: Record<string, boolean> }[] }) => {
     clearClientCache();
     return j<{ markedAt: string }>("/attendance", body("POST", p));
+  },
+  saveMeals: (p: { teamId: string; date: string; meals: { memberId: string; meals: Record<string, boolean> }[] }) => {
+    clearClientCache("attendance");
+    return j<{ count: number }>("/attendance/meals", body("POST", p));
   },
   attendance: (f: { date?: string; teamId?: string; status?: string }) => j<Rec[]>(`/attendance${q(f)}`, undefined, 15),
   async exportXlsx(date?: string) {
@@ -187,6 +223,16 @@ export const api = {
     a.download = `room-movement-${new Date().toLocaleDateString("en-CA")}.xlsx`;
     a.click();
     URL.revokeObjectURL(a.href);
+  },
+  mealsData: (date?: string) =>
+    j<MealsSummary>(`/meals${q({ date })}`, undefined, 10),
+  updateMeal: (p: { date: string; profileId: string; teamId: string; mealKey: string; value: boolean }) => {
+    clearClientCache("meals");
+    return j<{ success: boolean; meals: Record<string, boolean> }>("/meals", body("POST", p));
+  },
+  batchUpdateMeals: (p: { date: string; updates: { profileId: string; teamId: string; meals: Record<string, boolean> }[] }) => {
+    clearClientCache("meals");
+    return j<{ count: number }>("/meals", body("POST", p));
   },
 };
 export const today = () => new Date().toLocaleDateString("en-CA");

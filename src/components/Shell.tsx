@@ -21,6 +21,7 @@ export const Logo = ({ size = 40 }: { size?: number }) => (
 const NAV = [
   ["/dashboard", "Dashboard"],
   ["/teams", "Teams"],
+  ["/meals", "Meals"],
   ["/movement", "Room Movement"],
   ["/attendance", "Attendance"],
   ["/reports", "Reports"],

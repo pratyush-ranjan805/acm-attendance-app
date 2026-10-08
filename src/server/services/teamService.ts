@@ -12,6 +12,8 @@ export interface TeamMemberDto {
   department?: string;
   status?: "Present" | "Absent" | null;
   markedAt?: string | null;
+  meals?: Record<string, boolean> | null;
+  updatedBy?: string | null;
 }
 
 export interface TeamDto {
@@ -173,18 +175,31 @@ export async function getTeamByIdOrCode(identifier: string, date?: string): Prom
 
   // Fetch attendance for all members on this date
   const profileIds = (team.ig_team_members || []).map((m: any) => m.profile_id);
-  let attMap = new Map<string, { status: string; marked_at: string | null }>();
+  let attMap = new Map<string, { status: string; marked_at: string | null; meals?: Record<string, boolean> | null; updated_by_name?: string | null }>();
 
   if (profileIds.length > 0) {
     const { data: attData } = await supabase
       .from("ig_attendance")
-      .select("profile_id, status, marked_at")
+      .select(`
+        profile_id,
+        status,
+        marked_at,
+        meals,
+        updater:profiles!updated_by (
+          full_name
+        )
+      `)
       .eq("team_id", team.id)
       .eq("attendance_date", targetDate)
       .in("profile_id", profileIds);
 
     (attData || []).forEach((a: any) => {
-      attMap.set(a.profile_id, { status: a.status, marked_at: a.marked_at });
+      attMap.set(a.profile_id, {
+        status: a.status,
+        marked_at: a.marked_at,
+        meals: a.meals ?? null,
+        updated_by_name: a.updater ? String(a.updater.full_name) : null,
+      });
     });
   }
 
@@ -196,7 +211,7 @@ export async function getTeamByIdOrCode(identifier: string, date?: string): Prom
 function buildTeamDto(
   t: any,
   _unused: any[],
-  attMap?: Map<string, { status: string; marked_at: string | null }>
+  attMap?: Map<string, { status: string; marked_at: string | null; meals?: Record<string, boolean> | null; updated_by_name?: string | null }>
 ): TeamDto {
   const rawMembers: any[] = t.ig_team_members || [];
   const leaderId: string = t.leader_id;
@@ -223,6 +238,8 @@ function buildTeamDto(
         role: m.profile_id === leaderId ? "Leader" : "Member",
         status: att ? (att.status as "Present" | "Absent") : null,
         markedAt: att ? att.marked_at : null,
+        meals: att ? (att.meals ?? null) : null,
+        updatedBy: att ? (att.updated_by_name ?? null) : null,
       };
     });
 

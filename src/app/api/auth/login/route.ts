@@ -6,17 +6,18 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { email, password } = body || {};
 
-    if (!email || !password) {
+    if (!email) {
       return NextResponse.json(
-        { message: "Email and password are required." },
+        { message: "Email is required." },
         { status: 400 }
       );
     }
 
-    const result = await loginAdmin(email, password);
+    // password is optional — is_admin profiles can log in without one
+    const result = await loginAdmin(email, password ?? "");
     if (!result) {
       return NextResponse.json(
-        { message: "Invalid email or password." },
+        { message: "Access denied. Email not found or not an admin account." },
         { status: 401 }
       );
     }

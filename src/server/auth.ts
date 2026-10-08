@@ -50,12 +50,46 @@ export async function authenticateRequest(req: NextRequest): Promise<AdminPayloa
 }
 
 /**
+ * Passwordless login: if the email matches a profile with is_admin=true, issue a token directly.
+ * No password is required.
+ */
+export async function loginAdminByEmail(
+  email: string
+): Promise<{ token: string; admin: { name: string; email: string } } | null> {
+  const cleanEmail = email.trim().toLowerCase();
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+
+  const { data: profileData, error: profileError } = await supabase
+    .from("profiles")
+    .select("id, full_name, college_email, is_admin")
+    .ilike("college_email", cleanEmail)
+    .single();
+
+  if (!profileError && profileData && profileData.is_admin) {
+    const payload: AdminPayload = {
+      userId: String(profileData.id),
+      name: String(profileData.full_name || "Admin"),
+      email: String(profileData.college_email || cleanEmail),
+      role: "admin",
+    };
+    const token = signAdminToken(payload);
+    return {
+      token,
+      admin: { name: payload.name, email: payload.email },
+    };
+  }
+  return null;
+}
+
+/**
  * Login using shared ADMIN_PASSWORD or Supabase Auth.
  * 
  * Supports:
- * 1. Master admin fallback (email matches ADMIN_EMAIL or 'admin@acm.org' + ADMIN_PASSWORD)
- * 2. Any college_email with profiles.is_admin = true + ADMIN_PASSWORD
- * 3. Supabase Auth credentials (email + Supabase password) with profiles.is_admin = true
+ * 1. Passwordless: is_admin=true profile email (no password needed)
+ * 2. Master admin fallback (email matches ADMIN_EMAIL + ADMIN_PASSWORD)
+ * 3. Any college_email with profiles.is_admin = true + ADMIN_PASSWORD
+ * 4. Supabase Auth credentials (email + Supabase password) with profiles.is_admin = true
  */
 export async function loginAdmin(
   email: string,
@@ -64,6 +98,13 @@ export async function loginAdmin(
   const cleanEmail = email.trim().toLowerCase();
   const envAdminPassword = process.env.ADMIN_PASSWORD || "admin123";
   const envAdminEmail = (process.env.ADMIN_EMAIL || "admin@acm.org").trim().toLowerCase();
+
+  // 0. Passwordless: is_admin=true profile — no password required
+  if (!password || password.trim() === "") {
+    const byEmail = await loginAdminByEmail(cleanEmail);
+    if (byEmail) return byEmail;
+    return null; // email not found or not admin
+  }
 
   // 1. Master admin bypass / default desk credentials
   if (password === envAdminPassword && cleanEmail === envAdminEmail) {

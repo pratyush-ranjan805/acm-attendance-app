@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { api, Member, Status, today, fmtDate } from "@/lib/api";
+import { api, Status, today, fmtDate } from "@/lib/api";
 import { ConfirmDialog, DateSelector, ErrorBox, Skeleton, useLoad, useToast } from "@/components/ui";
 import { SwipeableMemberRow } from "@/components/SwipeableMemberRow";
 
@@ -43,7 +43,6 @@ export default function TeamDetails() {
     if (!t) return;
     setSaving(true);
     try {
-      // Pass the ig_teams UUID (t.id internal) via the team code (id)
       await api.saveAttendance({
         teamId: id,
         date,
@@ -62,6 +61,11 @@ export default function TeamDetails() {
   if (error || !t) return <ErrorBox msg={error ?? "Team not found"} retry={reload} />;
 
   const igData = t as any;
+
+  // Show who last marked attendance (from any member's markedAt)
+  const lastMarked = t.members
+    .filter((m) => m.markedAt)
+    .sort((a, b) => ((b.markedAt ?? "") > (a.markedAt ?? "") ? 1 : -1))[0];
 
   return (
     <div className="space-y-5 pb-24">
@@ -112,6 +116,14 @@ export default function TeamDetails() {
           <p className="text-3xl font-bold text-orange-400 mt-0.5">
             {present} / {t.members.length} Present
           </p>
+          {lastMarked && (
+            <p className="text-xs text-white/40 mt-1">
+              Last updated{lastMarked.markedAt
+                ? ` at ${new Date(lastMarked.markedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}`
+                : ""}
+              {(lastMarked as any).updatedBy ? ` by ${(lastMarked as any).updatedBy}` : ""}
+            </p>
+          )}
         </div>
         <div className="text-xs text-white/40 text-right hidden sm:block">
           Swipe right → Present<br />
@@ -135,7 +147,6 @@ export default function TeamDetails() {
                 setMarks((prev) => ({ ...prev, [m.id]: newStatus }));
                 setDirty(true);
               }}
-              // Read-only — no edit/delete since members are managed in IG portal
               onEdit={undefined}
               onDelete={undefined}
             />
@@ -167,7 +178,10 @@ export default function TeamDetails() {
         open={confirmSave}
         title="Save Attendance?"
         text={`Save attendance for ${present} present / ${t.members.length - present} absent on ${fmtDate(date)}?`}
-        onYes={() => { setConfirmSave(false); save(); }}
+        onYes={() => {
+          setConfirmSave(false);
+          save();
+        }}
         onNo={() => setConfirmSave(false)}
       />
     </div>

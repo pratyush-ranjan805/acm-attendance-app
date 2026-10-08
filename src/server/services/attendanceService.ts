@@ -17,6 +17,8 @@ export interface AttendanceRecordDto {
   markedAt: string | null;
   registrationNumber?: string;
   department?: string;
+  meals?: Record<string, boolean> | null;
+  updatedBy?: string | null;
 }
 
 export interface DashboardStatsDto {
@@ -46,17 +48,14 @@ function requireSupabase() {
   return supabase;
 }
 
-/** Only staged or shortlisted teams */
-const ELIGIBLE_FILTER = "staged_at.not.is.null,shortlisted_at.not.is.null";
-
 // ─── saveAttendanceBatch ──────────────────────────────────────────────────────
 
 export async function saveAttendanceBatch(
   payload: {
     teamId?: string;    // team_code or ig_teams.id
     date?: string;
-    records?: { memberId?: string; team_member_id?: string; status: string }[];
-    attendance?: { memberId?: string; team_member_id?: string; status: string; date?: string }[];
+    records?: { memberId?: string; team_member_id?: string; status: string; meals?: Record<string, boolean> }[];
+    attendance?: { memberId?: string; team_member_id?: string; status: string; date?: string; meals?: Record<string, boolean> }[];
   },
   adminUserId?: string
 ): Promise<{ markedAt: string; count: number }> {
@@ -102,7 +101,8 @@ export async function saveAttendanceBatch(
 
   if (!teamUuid) throw new Error("Team not found. Cannot save attendance.");
 
-  let count = 0;
+  // Build batch upsert rows — single DB round trip instead of N*2 round trips
+  const upsertRows: Record<string, any>[] = [];
   for (const item of rawList) {
     const profileId = item.memberId || item.team_member_id;
     if (!profileId) continue;
@@ -114,56 +114,93 @@ export async function saveAttendanceBatch(
     const status: AttendanceStatus = rawStatus as AttendanceStatus;
     const itemDate = String("date" in item && item.date ? item.date : fallbackDate).trim();
 
-    // Check if attendance record exists for this team+member+date
-    const { data: existing } = await supabase
-      .from("ig_attendance")
-      .select("id")
-      .eq("team_id", teamUuid)
-      .eq("profile_id", profileId)
-      .eq("attendance_date", itemDate)
-      .limit(1);
-
-    if (existing && existing.length > 0) {
-      // Update existing
-      const updateData: Record<string, any> = {
-        status,
-        marked_at: now,
-        updated_at: now,
-      };
-      if (validUpdatedBy) {
-        updateData.updated_by = validUpdatedBy;
-      }
-      const { error } = await supabase
-        .from("ig_attendance")
-        .update(updateData)
-        .eq("id", existing[0].id);
-      if (error) throw new Error(error.message);
-    } else {
-      // Insert new
-      const insertData: Record<string, any> = {
-        team_id: teamUuid,
-        profile_id: profileId,
-        attendance_date: itemDate,
-        status,
-        marked_at: now,
-        updated_at: now,
-      };
-      if (validUpdatedBy) {
-        insertData.updated_by = validUpdatedBy;
-      }
-      const { error } = await supabase
-        .from("ig_attendance")
-        .insert(insertData);
-      if (error) throw new Error(error.message);
+    const row: Record<string, any> = {
+      team_id: teamUuid,
+      profile_id: profileId,
+      attendance_date: itemDate,
+      status,
+      marked_at: now,
+      updated_at: now,
+    };
+    if (validUpdatedBy) {
+      row.updated_by = validUpdatedBy;
     }
-    count++;
+    // Preserve meals if provided
+    if (item.meals !== undefined) {
+      row.meals = item.meals;
+    }
+    upsertRows.push(row);
   }
+
+  if (upsertRows.length === 0) throw new Error("No valid attendance records to save.");
+
+  // Single batch upsert — conflict on (team_id, profile_id, attendance_date)
+  const { error } = await supabase
+    .from("ig_attendance")
+    .upsert(upsertRows, {
+      onConflict: "team_id,profile_id,attendance_date",
+      ignoreDuplicates: false,
+    });
+
+  if (error) throw new Error(error.message);
 
   // Invalidate stats and attendance cache so subsequent reads see latest data immediately
   serverCache.invalidate("stats");
   serverCache.invalidate("attendance");
 
-  return { markedAt: now, count };
+  return { markedAt: now, count: upsertRows.length };
+}
+
+// ─── saveMealsBatch ───────────────────────────────────────────────────────────
+// Update meals JSONB for attendance records without changing status
+
+export async function saveMealsBatch(
+  payload: {
+    teamId: string;
+    date: string;
+    meals: { memberId: string; meals: Record<string, boolean> }[];
+  },
+  adminUserId?: string
+): Promise<{ count: number }> {
+  const supabase = requireSupabase();
+  const now = new Date().toISOString();
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  let validUpdatedBy: string | null = null;
+  if (adminUserId && uuidRegex.test(adminUserId)) {
+    const { data: prof } = await supabase.from("profiles").select("id").eq("id", adminUserId).limit(1);
+    if (prof && prof.length > 0) validUpdatedBy = adminUserId;
+  }
+
+  // Resolve team UUID
+  let teamUuid: string | null = null;
+  const isUuid = uuidRegex.test(payload.teamId);
+  if (isUuid) {
+    teamUuid = payload.teamId;
+  } else {
+    const { data } = await supabase.from("ig_teams").select("id").ilike("team_code", payload.teamId.trim()).limit(1);
+    teamUuid = data?.[0]?.id || null;
+  }
+  if (!teamUuid) throw new Error("Team not found.");
+
+  let count = 0;
+  for (const item of payload.meals) {
+    const update: Record<string, any> = { meals: item.meals, updated_at: now };
+    if (validUpdatedBy) update.updated_by = validUpdatedBy;
+
+    const { error } = await supabase
+      .from("ig_attendance")
+      .update(update)
+      .eq("team_id", teamUuid)
+      .eq("profile_id", item.memberId)
+      .eq("attendance_date", payload.date);
+
+    if (error) throw new Error(error.message);
+    count++;
+  }
+
+  serverCache.invalidate("attendance");
+  return { count };
 }
 
 // ─── getAttendanceList ────────────────────────────────────────────────────────
@@ -204,12 +241,18 @@ export async function getAttendanceList(filters: {
       attendance_date,
       status,
       marked_at,
+      meals,
+      updated_by,
       profiles!profile_id (
         id,
         full_name,
         college_email,
         registration_number,
         department
+      ),
+      updater:profiles!updated_by (
+        id,
+        full_name
       )
     `)
     .in("team_id", eligibleTeamIds)
@@ -233,6 +276,8 @@ export async function getAttendanceList(filters: {
     const teamInfo = teamMap.get(String(r.team_id));
     if (!teamInfo) continue;
 
+    const updater = (r as any).updater;
+
     results.push({
       id: String(r.id),
       date: String(r.attendance_date),
@@ -245,6 +290,8 @@ export async function getAttendanceList(filters: {
       markedAt: r.marked_at ? String(r.marked_at) : null,
       registrationNumber: p.registration_number ? String(p.registration_number) : undefined,
       department: p.department ? String(p.department) : undefined,
+      meals: (r as any).meals ?? null,
+      updatedBy: updater ? String(updater.full_name) : null,
     });
   }
 
@@ -289,7 +336,7 @@ export async function getDashboardStats(targetDate?: string): Promise<DashboardS
     return emptyStats;
   }
 
-  // Only single query: attendance for today!
+  // Single query: attendance for today
   const { data: attData, error: attErr } = await supabase
     .from("ig_attendance")
     .select("team_id, profile_id, status")

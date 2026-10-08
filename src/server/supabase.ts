@@ -45,3 +45,13 @@ export function getSupabaseClient(): SupabaseClient | null {
 export function isSupabaseConfigured(): boolean {
   return !!getSupabaseClient();
 }
+
+export function requireSupabase(): SupabaseClient {
+  const client = getSupabaseClient();
+  if (!client) {
+    throw new Error(
+      "Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY."
+    );
+  }
+  return client;
+}
