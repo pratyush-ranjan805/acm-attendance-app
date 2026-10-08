@@ -31,6 +31,12 @@ export interface TeamDto {
   isStaged: boolean;
   submissionUrl?: string | null;
   problemStatement?: string | null;
+  stat?: {
+    teamId: string;
+    present: number;
+    absent: number;
+    totalMembers: number;
+  };
 }
 
 // ─── Helper ──────────────────────────────────────────────────────────────────
@@ -91,7 +97,14 @@ export async function fetchEligibleTeamsRaw(): Promise<any[]> {
 
       if (error) throw new Error(error.message);
       const teams = data || [];
-      serverCache.set("teams:raw_all", teams, 60);
+      // Cache raw teams for 10 minutes (teams list is stable during an event)
+      serverCache.set("teams:raw_all", teams, 600);
+      for (const t of teams) {
+        serverCache.set(`team:raw:${t.id}`, t, 600);
+        if (t.team_code) {
+          serverCache.set(`team:raw:${String(t.team_code).toLowerCase()}`, t, 600);
+        }
+      }
       return teams;
     } finally {
       pendingRawTeamsPromise = null;
@@ -101,9 +114,49 @@ export async function fetchEligibleTeamsRaw(): Promise<any[]> {
   return pendingRawTeamsPromise;
 }
 
-export async function getAllTeams(search?: string): Promise<TeamDto[]> {
-  const rawTeams = await fetchEligibleTeamsRaw();
-  const dtos = rawTeams.map((t: any) => buildTeamDto(t, []));
+export async function getAllTeams(search?: string, date?: string): Promise<TeamDto[]> {
+  const targetDate = date || new Date().toLocaleDateString("en-CA");
+  const cacheKey = `teams_with_stats:${targetDate}`;
+  let dtos = serverCache.get<TeamDto[]>(cacheKey);
+
+  if (!dtos) {
+    const rawTeams = await fetchEligibleTeamsRaw();
+    const supabase = requireSupabase();
+
+    // Fetch attendance for all eligible teams on this date in 1 query
+    const { data: attData } = await supabase
+      .from("ig_attendance")
+      .select("team_id, profile_id, status")
+      .eq("attendance_date", targetDate);
+
+    const attMap = new Map<string, string>(); // "teamId:profileId" -> status
+    (attData || []).forEach((a: any) => {
+      attMap.set(`${a.team_id}:${a.profile_id}`, a.status);
+    });
+
+    dtos = rawTeams.map((t: any) => {
+      const mems = (t.ig_team_members || []).filter((m: any) => m.profiles);
+      let pCount = 0;
+      let aCount = 0;
+      mems.forEach((m: any) => {
+        const st = attMap.get(`${t.id}:${m.profile_id}`);
+        if (st === "Present") pCount++;
+        else if (st === "Absent") aCount++;
+      });
+
+      const baseDto = buildTeamDto(t, []);
+      baseDto.stat = {
+        teamId: baseDto.teamId,
+        present: pCount,
+        absent: aCount,
+        totalMembers: mems.length,
+      };
+      return baseDto;
+    });
+
+    // Cache teams with stats for 120 seconds
+    serverCache.set(cacheKey, dtos, 120);
+  }
 
   if (search && search.trim()) {
     const term = search.trim().toLowerCase();
@@ -120,18 +173,24 @@ export async function getAllTeams(search?: string): Promise<TeamDto[]> {
 // ─── getTeamByIdOrCode ───────────────────────────────────────────────────────
 
 export async function getTeamByIdOrCode(identifier: string, date?: string): Promise<TeamDto | null> {
-  const supabase = requireSupabase();
   const targetDate = date || new Date().toLocaleDateString("en-CA");
+  const normalizedId = identifier.trim().toLowerCase();
+  const cacheKey = `team:dto:${normalizedId}:${targetDate}`;
 
+  // 1. Check if full team DTO is in cache (e.g. recent lookup)
+  const cachedDto = serverCache.get<TeamDto>(cacheKey);
+  if (cachedDto) return cachedDto;
+
+  const supabase = requireSupabase();
   const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
 
-  // Check if team is in raw cache first to save round trips
-  const rawTeams = serverCache.get<any[]>("teams:raw_all");
-  let team: any = null;
-  if (rawTeams) {
+  // 2. Check if team is in raw index or raw teams cache
+  let team: any = serverCache.get<any>(`team:raw:${normalizedId}`);
+  if (!team) {
+    const rawTeams = await fetchEligibleTeamsRaw();
     team = isUuid
       ? rawTeams.find((t) => t.id === identifier)
-      : rawTeams.find((t) => String(t.team_code).toLowerCase() === identifier.trim().toLowerCase());
+      : rawTeams.find((t) => String(t.team_code).toLowerCase() === normalizedId);
   }
 
   if (!team) {
@@ -173,9 +232,9 @@ export async function getTeamByIdOrCode(identifier: string, date?: string): Prom
     team = data[0];
   }
 
-  // Fetch attendance for all members on this date
+  // 3. Fetch attendance for members on this date
   const profileIds = (team.ig_team_members || []).map((m: any) => m.profile_id);
-  let attMap = new Map<string, { status: string; marked_at: string | null; meals?: Record<string, boolean> | null; updated_by_name?: string | null }>();
+  const attMap = new Map<string, { status: string; marked_at: string | null; meals?: Record<string, boolean> | null; updated_by_name?: string | null }>();
 
   if (profileIds.length > 0) {
     const { data: attData } = await supabase
@@ -203,7 +262,9 @@ export async function getTeamByIdOrCode(identifier: string, date?: string): Prom
     });
   }
 
-  return buildTeamDto(team, [], attMap);
+  const dto = buildTeamDto(team, [], attMap);
+  serverCache.set(cacheKey, dto, 120);
+  return dto;
 }
 
 // ─── buildTeamDto ─────────────────────────────────────────────────────────────

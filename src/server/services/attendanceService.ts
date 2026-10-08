@@ -67,13 +67,19 @@ export async function saveAttendanceBatch(
   // Verify if adminUserId is an actual profile in public.profiles before using as updated_by foreign key
   let validUpdatedBy: string | null = null;
   if (adminUserId && uuidRegex.test(adminUserId)) {
-    const { data: prof } = await supabase
-      .from("profiles")
-      .select("id")
-      .eq("id", adminUserId)
-      .limit(1);
-    if (prof && prof.length > 0) {
+    const cachedAdmin = serverCache.get<boolean>(`admin_prof:${adminUserId}`);
+    if (cachedAdmin) {
       validUpdatedBy = adminUserId;
+    } else {
+      const { data: prof } = await supabase
+        .from("profiles")
+        .select("id")
+        .eq("id", adminUserId)
+        .limit(1);
+      if (prof && prof.length > 0) {
+        validUpdatedBy = adminUserId;
+        serverCache.set(`admin_prof:${adminUserId}`, true, 3600);
+      }
     }
   }
 
@@ -82,7 +88,7 @@ export async function saveAttendanceBatch(
     throw new Error("No attendance records provided.");
   }
 
-  // Resolve team UUID from team_code or UUID
+  // Resolve team UUID from team_code or UUID (checking in-memory index first)
   const teamIdentifier = payload.teamId || "";
   let teamUuid: string | null = null;
   if (teamIdentifier) {
@@ -90,12 +96,17 @@ export async function saveAttendanceBatch(
     if (isUuid) {
       teamUuid = teamIdentifier;
     } else {
-      const { data } = await supabase
-        .from("ig_teams")
-        .select("id")
-        .ilike("team_code", teamIdentifier.trim())
-        .limit(1);
-      teamUuid = data?.[0]?.id || null;
+      const cachedTeam = serverCache.get<any>(`team:raw:${teamIdentifier.trim().toLowerCase()}`);
+      if (cachedTeam?.id) {
+        teamUuid = cachedTeam.id;
+      } else {
+        const { data } = await supabase
+          .from("ig_teams")
+          .select("id")
+          .ilike("team_code", teamIdentifier.trim())
+          .limit(1);
+        teamUuid = data?.[0]?.id || null;
+      }
     }
   }
 
@@ -144,9 +155,11 @@ export async function saveAttendanceBatch(
 
   if (error) throw new Error(error.message);
 
-  // Invalidate stats and attendance cache so subsequent reads see latest data immediately
+  // Invalidate stats, team dtos, and attendance cache so subsequent reads see latest data immediately
   serverCache.invalidate("stats");
   serverCache.invalidate("attendance");
+  serverCache.invalidate("team:dto:");
+  serverCache.invalidate("teams_with_stats:");
 
   return { markedAt: now, count: upsertRows.length };
 }

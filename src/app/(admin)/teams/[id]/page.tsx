@@ -15,7 +15,7 @@ export default function TeamDetails() {
   const [saving, setSaving] = useState(false);
   const [confirmSave, setConfirmSave] = useState(false);
 
-  const { data: t, error, loading, reload } = useLoad(() => api.team(id, date), [id, date]);
+  const { data: t, error, loading, reload, setData } = useLoad(() => api.team(id, date), [id, date]);
 
   useEffect(() => {
     if (t) {
@@ -43,14 +43,25 @@ export default function TeamDetails() {
     if (!t) return;
     setSaving(true);
     try {
-      await api.saveAttendance({
+      const res = await api.saveAttendance({
         teamId: id,
         date,
         records: t.members.map((m) => ({ memberId: m.id, status: marks[m.id] })),
       });
       toast("Attendance saved successfully");
       setDirty(false);
-      reload();
+      setData((prev: any) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          members: prev.members.map((m: any) => ({
+            ...m,
+            status: marks[m.id] ?? m.status,
+            markedAt: res.markedAt || new Date().toISOString(),
+            updatedBy: "You",
+          })),
+        };
+      });
     } catch (e) {
       toast(`Not saved: ${(e as Error).message}`, false);
     }

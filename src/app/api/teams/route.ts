@@ -11,8 +11,9 @@ export async function GET(req: NextRequest) {
 
     const { searchParams } = new URL(req.url);
     const search = searchParams.get("search") || undefined;
+    const date = searchParams.get("date") || undefined;
 
-    const teams = await getAllTeams(search);
+    const teams = await getAllTeams(search, date);
     return NextResponse.json(teams, { status: 200 });
   } catch (error) {
     return NextResponse.json(

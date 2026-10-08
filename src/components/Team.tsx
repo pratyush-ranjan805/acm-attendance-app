@@ -94,31 +94,26 @@ export function TeamCard({
 
 export function TeamSearch({ onResults }: { onResults?: (n: number) => void }) {
   const [v, setV] = useState("");
-  const [s, setS] = useState("");
   const todayDate = today();
 
+  // Load all teams with attendance stats in a single fast query
+  const { data, error, loading, reload } = useLoad(() => api.teams(undefined, todayDate), [todayDate]);
+
+  // Instant in-memory search filtering (0ms latency, zero skeleton flickers while typing)
+  const filteredTeams = useMemo(() => {
+    if (!data) return [];
+    if (!v.trim()) return data;
+    const q = v.trim().toLowerCase();
+    return data.filter(
+      (t) =>
+        t.name.toLowerCase().includes(q) ||
+        t.teamId.toLowerCase().includes(q)
+    );
+  }, [data, v]);
+
   useEffect(() => {
-    const h = setTimeout(() => setS(v.trim()), 200);
-    return () => clearTimeout(h);
-  }, [v]);
-
-  const { data, error, loading, reload } = useLoad(() => api.teams(s), [s]);
-  const { data: statsData } = useLoad(() => api.stats(todayDate), [todayDate]);
-
-  useEffect(() => {
-    if (onResults && data) onResults(data.length);
-  }, [data, onResults]);
-
-  // Build a quick lookup map from teamId -> stats
-  const statMap = useMemo<Map<string, TeamAttendanceStat>>(() => {
-    const m = new Map<string, TeamAttendanceStat>();
-    if (statsData && (statsData as any).teams) {
-      for (const ts of (statsData as any).teams) {
-        m.set(ts.teamId, ts);
-      }
-    }
-    return m;
-  }, [statsData]);
+    if (onResults) onResults(filteredTeams.length);
+  }, [filteredTeams, onResults]);
 
   return (
     <div className="space-y-4">
@@ -134,21 +129,24 @@ export function TeamSearch({ onResults }: { onResults?: (n: number) => void }) {
         <Skeleton rows={3} />
       ) : error ? (
         <ErrorBox msg={error} retry={reload} />
-      ) : !data?.length ? (
+      ) : !filteredTeams.length ? (
         <div className="card p-10 text-center space-y-4 border border-white/10 bg-white/[0.02]">
           <div className="text-4xl">🔍</div>
           <div>
-            <h3 className="text-lg font-semibold text-white">No Eligible Teams Found</h3>
+            <h3 className="text-lg font-semibold text-white">
+              {v.trim() ? "No Matching Teams Found" : "No Eligible Teams Found"}
+            </h3>
             <p className="text-sm text-white/50 mt-1 max-w-md mx-auto">
-              Only teams that have been <strong className="text-blue-300">staged</strong> or{" "}
-              <strong className="text-purple-300">shortlisted</strong> in the IG portal appear here.
+              {v.trim()
+                ? `No team matches "${v}". Check the team name or code.`
+                : "Only teams that have been staged or shortlisted appear here."}
             </p>
           </div>
         </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {data.map((t) => (
-            <TeamCard key={t.teamId} t={t} stat={statMap.get(t.teamId)} />
+          {filteredTeams.map((t) => (
+            <TeamCard key={t.teamId} t={t} stat={t.stat} />
           ))}
         </div>
       )}

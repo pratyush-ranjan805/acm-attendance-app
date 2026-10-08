@@ -2,7 +2,7 @@
 const BASE = process.env.NEXT_PUBLIC_API_URL || "/api";
 export type Status = "Present" | "Absent";
 export type Member = { id: string; name: string; email?: string; role: "Leader" | "Member"; status?: Status | null; markedAt?: string | null; meals?: Record<string, boolean> | null };
-export type Team = { teamId: string; name: string; memberCount?: number; members: Member[] };
+export type Team = { teamId: string; name: string; memberCount?: number; members: Member[]; stat?: { teamId: string; present: number; absent: number; totalMembers: number } };
 export type Stats = { totalTeams: number; totalMembers: number; present: number; absent: number; percentage: number };
 export type Rec = { date: string; teamId: string; teamName: string; memberId: string; memberName: string; role: string; status: Status; markedAt: string | null; meals?: Record<string, boolean> | null; updatedBy?: string | null };
 export type Admin = { name: string; email: string };
@@ -157,9 +157,9 @@ export const api = {
     clearClientCache();
     return j<{ token: string; admin: Admin }>("/auth/login", body("POST", { email, password }));
   },
-  stats: (date: string) => j<Stats>(`/dashboard/stats${q({ date })}`, undefined, 20),
-  teams: (search?: string) => j<Team[]>(`/teams${q({ search })}`, undefined, 20),
-  team: (id: string, date: string) => j<Team>(`/teams/${e(id)}${q({ date })}`, undefined, 15),
+  stats: (date: string) => j<Stats>(`/dashboard/stats${q({ date })}`, undefined, 30),
+  teams: (search?: string, date?: string) => j<Team[]>(`/teams${q({ search, date })}`, undefined, 30),
+  team: (id: string, date: string) => j<Team>(`/teams/${e(id)}${q({ date })}`, undefined, 60),
   addTeam: (t: { teamId: string; name: string }) => j<Team>("/teams", body("POST", t)),
   editTeam: (id: string, t: { teamId: string; name: string }) => j<Team>(`/teams/${e(id)}`, body("PUT", t)),
   delTeam: (id: string) => { clearClientCache(); return raw(`/teams/${e(id)}`, body("DELETE")); },
@@ -167,7 +167,9 @@ export const api = {
   editMember: (id: string, mid: string, m: Partial<Member>) => j<Member>(`/teams/${e(id)}/members/${mid}`, body("PUT", m)),
   delMember: (id: string, mid: string) => { clearClientCache(); return raw(`/teams/${e(id)}/members/${mid}`, body("DELETE")); },
   saveAttendance: (p: { teamId: string; date: string; records: { memberId: string; status: Status; meals?: Record<string, boolean> }[] }) => {
-    clearClientCache();
+    clearClientCache("teams");
+    clearClientCache("stats");
+    clearClientCache("attendance");
     return j<{ markedAt: string }>("/attendance", body("POST", p));
   },
   saveMeals: (p: { teamId: string; date: string; meals: { memberId: string; meals: Record<string, boolean> }[] }) => {
